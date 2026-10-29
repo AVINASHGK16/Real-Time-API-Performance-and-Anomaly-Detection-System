@@ -81,16 +81,19 @@ def init_db():
     logger.info("Database initialised at '%s'.", config.DB_PATH)
 
 
-def insert_event(conn: sqlite3.Connection, event: dict, event_id: str):
-    """Insert a raw event; silently skip if event_id already exists (dedup)."""
+def insert_event(conn: sqlite3.Connection, event: dict, event_id: str) -> bool:
+    """Insert a raw event; silently skip if event_id already exists (dedup).
+    Returns True if inserted, False if skipped (duplicate).
+    """
     try:
-        conn.execute(
+        cur = conn.execute(
             """INSERT OR IGNORE INTO events
                (event_id, timestamp, endpoint, status_code, latency_ms)
                VALUES (?, ?, ?, ?, ?)""",
             (event_id, event["timestamp"], event["endpoint"],
              event["status_code"], event["latency_ms"]),
         )
+        return cur.rowcount > 0
     except sqlite3.Error as exc:
         logger.error("insert_event failed: %s", exc)
         raise

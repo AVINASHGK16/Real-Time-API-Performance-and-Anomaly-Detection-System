@@ -13,6 +13,7 @@ so the anomaly detector has something to flag in demos.
 import json
 import random
 import time
+import uuid
 import logging
 from datetime import datetime, timezone
 from kafka import KafkaProducer
@@ -39,8 +40,8 @@ ERROR_STATUS_CODES    = [500, 502, 503, 504]
 
 def generate_event(spike: bool = False) -> dict:
     endpoint = random.choice(ENDPOINTS)
-    if spike and random.random() < 0.5:
-        # Latency spike: 2–10× normal range
+    if spike:
+        # Latency spike: 2–10× normal range with server error
         latency_ms = round(random.uniform(1500, 6000), 2)
         status_code = random.choice(ERROR_STATUS_CODES)
     else:
@@ -49,6 +50,7 @@ def generate_event(spike: bool = False) -> dict:
         status_code = random.choice(NORMAL_STATUS_WEIGHTS)
 
     return {
+        "event_id":    str(uuid.uuid4()),
         "timestamp":   datetime.now(timezone.utc).isoformat(),
         "endpoint":    endpoint,
         "status_code": status_code,
@@ -67,7 +69,8 @@ def on_send_error(exc):
     logger.error("Failed to send message: %s", exc)
 
 
-def run_producer():
+def run_producer(max_events: int | None = None, interval: float | None = None):
+    sleep_sec = config.PRODUCER_INTERVAL if interval is None else interval
     logger.info("Connecting to Kafka broker at %s …", config.KAFKA_BROKER)
     producer = KafkaProducer(
         bootstrap_servers=config.KAFKA_BROKER,
@@ -76,9 +79,10 @@ def run_producer():
         retries=3,
     )
     logger.info("Producer ready. Publishing to topic '%s' every %.2fs …",
-                config.KAFKA_TOPIC, config.PRODUCER_INTERVAL)
+                config.KAFKA_TOPIC, sleep_sec)
 
     event_count = 0
+    produced_events = []
     try:
         while True:
             event_count += 1
@@ -88,13 +92,18 @@ def run_producer():
             future = producer.send(config.KAFKA_TOPIC, value=event)
             future.add_callback(on_send_success)
             future.add_errback(on_send_error)
+            produced_events.append(event)
 
             label = "SPIKE" if spike else "normal"
             logger.info("[%d/%s] endpoint=%-22s latency=%.1f ms status=%s",
                         event_count, label,
                         event["endpoint"], event["latency_ms"], event["status_code"])
 
-            time.sleep(config.PRODUCER_INTERVAL)
+            if max_events is not None and event_count >= max_events:
+                logger.info("Reached maximum event count (%d). Stopping producer.", max_events)
+                break
+
+            time.sleep(sleep_sec)
 
     except KeyboardInterrupt:
         logger.info("Producer interrupted by user. Flushing …")
@@ -105,6 +114,7 @@ def run_producer():
         producer.flush()
         producer.close()
         logger.info("Producer closed.")
+    return produced_events
 
 
 if __name__ == "__main__":

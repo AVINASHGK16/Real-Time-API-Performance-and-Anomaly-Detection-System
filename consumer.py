@@ -95,6 +95,8 @@ def parse_event(raw: bytes) -> dict | None:
     try:
         event["latency_ms"]  = float(event["latency_ms"])
         event["status_code"] = int(event["status_code"])
+        if not isinstance(event["timestamp"], str):
+            event["timestamp"] = str(event["timestamp"])
     except (TypeError, ValueError) as exc:
         logger.warning("Malformed event – bad field types: %s", exc)
         return None
@@ -104,11 +106,12 @@ def parse_event(raw: bytes) -> dict | None:
 
 # ── Main consumer loop ───────────────────────────────────────────────────────
 
-def run_consumer():
+def run_consumer(max_events: int | None = None, timeout_ms: int | None = None):
     db.init_db()
     model   = load_model()
     roller  = RollingMetrics()
 
+    timeout = -1 if timeout_ms is None else timeout_ms
     logger.info("Connecting to Kafka broker at %s …", config.KAFKA_BROKER)
     consumer = KafkaConsumer(
         config.KAFKA_TOPIC,
@@ -117,9 +120,13 @@ def run_consumer():
         auto_offset_reset="earliest",
         enable_auto_commit=True,
         value_deserializer=lambda m: m,   # raw bytes; we parse manually
-        consumer_timeout_ms=-1,           # block forever
+        consumer_timeout_ms=timeout,      # -1 = block forever, or ms timeout
     )
     logger.info("Consumer ready. Listening on topic '%s' …", config.KAFKA_TOPIC)
+
+    processed_count = 0
+    anomaly_count = 0
+    duplicate_count = 0
 
     try:
         for message in consumer:
@@ -130,7 +137,7 @@ def run_consumer():
             endpoint   = event["endpoint"]
             latency_ms = event["latency_ms"]
             is_error   = event["status_code"] >= 500
-            event_id   = str(uuid.uuid4())
+            event_id   = event.get("event_id") or str(uuid.uuid4())
 
             # ── Anomaly scoring ──────────────────────────────────────────────
             is_anomaly = False
@@ -144,10 +151,14 @@ def run_consumer():
             roller.update(endpoint, latency_ms, is_error)
             metrics = roller.get_metrics(endpoint)
 
-            # ── Persist ──────────────────────────────────────────────────────
+            # ── Persist (with deduplication check) ───────────────────────────
             try:
                 with db.managed_connection() as conn:
-                    db.insert_event(conn, event, event_id)
+                    inserted = db.insert_event(conn, event, event_id)
+                    if not inserted:
+                        duplicate_count += 1
+                        logger.info("Duplicate event %s skipped.", event_id)
+                        continue
                     if metrics:
                         db.insert_metrics(conn, metrics)
                     db.insert_anomaly(conn, {
@@ -162,14 +173,22 @@ def run_consumer():
                 logger.error("DB write failed (skipping event): %s", exc)
                 continue
 
+            processed_count += 1
+            if is_anomaly:
+                anomaly_count += 1
+
             flag = "⚠ ANOMALY" if is_anomaly else "OK"
             logger.info(
                 "[%s] endpoint=%-22s latency=%.1f ms status=%s score=%s %s",
-                event["timestamp"][:19], endpoint, latency_ms,
+                str(event["timestamp"])[:19], endpoint, latency_ms,
                 event["status_code"],
                 f"{score:.3f}" if score is not None else "N/A",
                 flag,
             )
+
+            if max_events is not None and processed_count >= max_events:
+                logger.info("Reached maximum event count (%d). Stopping consumer.", max_events)
+                break
 
     except KeyboardInterrupt:
         logger.info("Consumer interrupted by user.")
@@ -179,6 +198,12 @@ def run_consumer():
     finally:
         consumer.close()
         logger.info("Consumer closed.")
+
+    return {
+        "processed": processed_count,
+        "anomalies": anomaly_count,
+        "duplicates": duplicate_count,
+    }
 
 
 if __name__ == "__main__":
