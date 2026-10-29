@@ -152,6 +152,19 @@ def fetch_recent_events(limit: int = 200) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+def fetch_recent_events_with_anomalies(limit: int = 200) -> list[dict]:
+    """Fetch recent events joined with anomaly scores and flags."""
+    with managed_connection() as conn:
+        rows = conn.execute(
+            """SELECT e.*, COALESCE(a.is_anomaly, 0) AS is_anomaly, a.score
+               FROM events e
+               LEFT JOIN anomalies a ON e.event_id = a.event_id
+               ORDER BY e.id DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
 def fetch_recent_metrics(limit: int = 500) -> list[dict]:
     with managed_connection() as conn:
         rows = conn.execute(
