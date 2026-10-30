@@ -148,3 +148,12 @@ streamlit run dashboard.py
 - [x] **Milestone 3:** Full streaming pipeline integration (Producer → Kafka → Consumer → IsolationForest → SQLite) with deduplication & fault tolerance.
 - [x] **Milestone 4:** Live Streamlit monitoring dashboard with real-time KPI cards, time-series anomaly overlays, and native auto-refresh.
 - [x] **Final Submission Audit:** Documentation, lab demonstration checklist, and comprehensive academic report.
+
+---
+
+## Submission Deliverables
+
+- **Comprehensive Project Report:** [`FINAL_SUBMISSION_REPORT.md`](FINAL_SUBMISSION_REPORT.md)
+- **Verified Dashboard Screenshot:** [`dashboard_final_submission.png`](dashboard_final_submission.png)
+- **Automated Kafka Startup Script:** [`start_kafka.ps1`](start_kafka.ps1)
+
